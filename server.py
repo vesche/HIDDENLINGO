@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 
-import asyncio
-
-from time import sleep
+import asyncio, random
 from sanic import Sanic
 
 app = Sanic(name='HIDDENLINGO')
-
-test_inc = 0
 
 async def _consumer_handler(ws):
     data = await ws.recv()
@@ -15,17 +11,15 @@ async def _consumer_handler(ws):
     await asyncio.sleep(.1)
 
 async def _producer_handler(ws):
-    global test_inc
+    x = random.randint(0,12)
     cmd = str()
-    if test_inc == 3:
+    if x == 3:
         cmd = 'pwd'
-    elif test_inc == 10:
+    elif x == 10:
         cmd = 'ls'
-    test_inc += 1
     msg = str()
     if cmd:
         msg = '0x00 ' + cmd
-    sleep(1)
     await ws.send(msg)
     await asyncio.sleep(.1)
 
